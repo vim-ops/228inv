@@ -252,31 +252,28 @@ func HandleOutbound(c *gin.Context) {
         return
     }
 
-    // 対象製品の取得と更新（同じ型番のみ）
+    // 対象製品の取得と更新をメインのトランザクション内で実行
+    var processedProducts []string
     rows, err := tx.Query(`
-        WITH target_products AS (
-            SELECT p.product_id, p.type_id
-            FROM products p
-            WHERE p.product_id >= $1
-            AND p.product_id <= $2
-            AND p.status = 'in_stock'
-            ORDER BY p.product_id
-        )
-        SELECT tp.product_id
-        FROM target_products tp
-        INNER JOIN product_types pt ON tp.type_id = pt.id
-        WHERE pt.category = $3
-        AND tp.type_id = $4
-        FOR UPDATE
+        UPDATE products p
+        SET status = 'out_of_stock'
+        FROM product_types pt
+        WHERE p.type_id = pt.id
+        AND p.product_id >= $1
+        AND p.product_id <= $2
+        AND p.status = 'in_stock'
+        AND pt.category = $3
+        AND pt.id = $4
+        RETURNING p.product_id
     `, req.ProductIDStart, req.ProductIDEnd, category, startTypeID)
     if err != nil {
-        log.Printf("製品取得エラー: %v", err)
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "製品の取得に失敗しました"})
+        log.Printf("製品更新エラー: %v", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "製品の更新に失敗しました"})
         return
     }
     defer rows.Close()
 
-    var processedProducts []string
+    // 更新された製品IDを収集
     for rows.Next() {
         var productID string
         if err := rows.Scan(&productID); err != nil {
@@ -284,38 +281,35 @@ func HandleOutbound(c *gin.Context) {
             c.JSON(http.StatusInternalServerError, gin.H{"error": "製品データの読み取りに失敗しました"})
             return
         }
+        processedProducts = append(processedProducts, productID)
+    }
 
-        // ステータス更新
-        result, err := tx.Exec(`
-            UPDATE products
-            SET status = 'out_of_stock'
-            WHERE product_id = $1
-        `, productID)
-        if err != nil {
-            log.Printf("製品ステータス更新エラー: %v", err)
-            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("製品ステータスの更新に失敗しました: %v", err)})
-            return
-        }
-        rowsAffected, _ := result.RowsAffected()
-        log.Printf("製品 %s のステータスを更新しました。影響を受けた行数: %d", productID, rowsAffected)
-
-        // 出庫記録作成
-        result, err = tx.Exec(`
+    // 出庫記録の一括作成
+    if len(processedProducts) > 0 {
+        stmt, err := tx.Prepare(`
             INSERT INTO outbound_records (
                 product_id, staff_id, outbound_number, outbound_date,
                 customer_number, customer_name, purchaser_number, purchaser_name, notes
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, productID, req.StaffID, outboundNumber, outboundDate,
-            req.CustomerNumber, req.CustomerName, req.PurchaserNumber, req.PurchaserName, req.Notes)
+        `)
         if err != nil {
-            log.Printf("出庫記録作成エラー: %v", err)
-            c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("出庫記録の作成に失敗しました: %v", err)})
+            log.Printf("ステートメント準備エラー: %v", err)
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "出庫記録の準備に失敗しました"})
             return
         }
-        rowsAffected, _ = result.RowsAffected()
-        log.Printf("製品 %s の出庫記録を作成しました。影響を受けた行数: %d", productID, rowsAffected)
+        defer stmt.Close()
 
-        processedProducts = append(processedProducts, productID)
+        for _, productID := range processedProducts {
+            _, err = stmt.Exec(
+                productID, req.StaffID, outboundNumber, outboundDate,
+                req.CustomerNumber, req.CustomerName, req.PurchaserNumber, req.PurchaserName, req.Notes,
+            )
+            if err != nil {
+                log.Printf("出庫記録作成エラー: %v", err)
+                c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("出庫記録の作成に失敗しました: %v", err)})
+                return
+            }
+        }
     }
 
     if len(processedProducts) == 0 {

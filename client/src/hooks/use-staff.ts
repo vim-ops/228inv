@@ -11,7 +11,8 @@ export const useStaff = () => {
       console.log("[useStaff] スタッフ一覧:", response.data);
       return response.data;
     },
-    initialData: [],
+    staleTime: 0, // キャッシュを即時無効化
+    refetchOnMount: true, // コンポーネントマウント時に必ずデータを再取得
   });
 
   const queryClient = useQueryClient();

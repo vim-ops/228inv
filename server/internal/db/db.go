@@ -1,10 +1,12 @@
 package db
 
 import (
+    "context"
     "database/sql"
     "fmt"
     "log"
     "os"
+    "time"
     _ "github.com/lib/pq"
 )
 
@@ -44,6 +46,12 @@ func InitDB() error {
         return fmt.Errorf("データベース接続エラー: %v", err)
     }
 
+    // 接続プールの設定
+    DB.SetMaxOpenConns(25)
+    DB.SetMaxIdleConns(5)
+    DB.SetConnMaxLifetime(5 * time.Minute)
+    DB.SetConnMaxIdleTime(5 * time.Minute)
+
     // 接続テスト
     err = DB.Ping()
     if err != nil {
@@ -56,7 +64,14 @@ func InitDB() error {
 
 // トランザクションを開始
 func BeginTx() (*sql.Tx, error) {
-    return DB.Begin()
+    // 分離レベルを指定してトランザクションを開始
+    tx, err := DB.BeginTx(context.Background(), &sql.TxOptions{
+        Isolation: sql.LevelRepeatableRead,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("トランザクション開始エラー: %v", err)
+    }
+    return tx, nil
 }
 
 // PCモデル番号の取得

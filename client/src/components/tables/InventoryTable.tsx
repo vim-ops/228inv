@@ -9,6 +9,7 @@ import {
   TableRow,
 } from "../ui/table";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import type { ProductCategory } from "@/lib/constants";
 
 interface InventoryTableProps {
@@ -18,14 +19,20 @@ interface InventoryTableProps {
 
 export const InventoryTable: React.FC<InventoryTableProps> = ({ category, data }) => {
   const [filter, setFilter] = useState("");
+  const [showOutOfStock, setShowOutOfStock] = useState(false);
 
   const filteredInventory = data.filter((item) => {
     const searchTerm = filter.toLowerCase();
-    return (
+    const matchesSearch = (
       item.productId.toLowerCase().includes(searchTerm) ||
       item.type.name.toLowerCase().includes(searchTerm) ||
       (item.lotNumber && item.lotNumber.toLowerCase().includes(searchTerm))
     );
+    
+    // 出庫済み製品の表示/非表示フィルタリング
+    const matchesStatus = showOutOfStock || item.status === "in_stock";
+    
+    return matchesSearch && matchesStatus;
   });
 
   if (!filteredInventory?.length) {
@@ -34,11 +41,27 @@ export const InventoryTable: React.FC<InventoryTableProps> = ({ category, data }
 
   return (
     <div className="space-y-4">
-      <Input
-        placeholder="製品ID、タイプ、ロット番号で検索..."
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-      />
+      <div className="flex items-center justify-between">
+        <Input
+          placeholder="製品ID、タイプ、ロット番号で検索..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="max-w-sm"
+        />
+        <div className="flex items-center space-x-2">
+          <Switch
+            id="show-out-of-stock"
+            checked={showOutOfStock}
+            onCheckedChange={setShowOutOfStock}
+          />
+          <label
+            htmlFor="show-out-of-stock"
+            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+          >
+            出庫済み製品を表示
+          </label>
+        </div>
+      </div>
       <Table>
         <TableHeader>
           <TableRow>
