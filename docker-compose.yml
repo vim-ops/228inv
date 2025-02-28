@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: inventory
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/internal/db/migrations:/docker-entrypoint-initdb.d
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+      target: builder  # 開発時はbuilderステージを使用
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: inventory
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server:/build
+    command: go run cmd/main.go  # 開発時はホットリロード用にgo runを使用
+    depends_on:
+      - db
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:8080
+    depends_on:
+      - server
+
+volumes:
+  postgres_data:
