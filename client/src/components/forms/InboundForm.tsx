@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
+import { inventoryApi, pcModelNumbersApi } from "@/lib/api";
 import { CalendarIcon, Plus, Loader2, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
@@ -62,7 +63,7 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
   const [modelNumberFilter, setModelNumberFilter] = useState("");
   const [isChecking, setIsChecking] = useState(false);
   const [existingIds, setExistingIds] = useState<string[]>([]);
-  const [existingProducts, setExistingProducts] = useState<Record<string, { category: string; typeName: string }>>({});
+  const [existingProducts, setExistingProducts] = useState<Record<string, { category: string; typeName: string; message: string }>>({});
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -74,7 +75,7 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
     enabled: category === PRODUCT_CATEGORIES.PC,
   });
 
-  const { data: latestLotNumber } = useQuery({
+  const { data: latestLotNumber } = useQuery<{ lotNumber: string | null; message: string }>({
     queryKey: ["latest-lot-number", category],
     enabled: !!category,
   });
@@ -124,11 +125,8 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
     }
     setIsChecking(true);
     try {
-      const response = await fetch(`/api/inventory/${category}/check-product-id/${productId}`);
-      if (!response.ok) {
-        throw new Error('製品IDのチェックに失敗しました');
-      }
-      const data = await response.json();
+      const response = await inventoryApi.checkProductId(category, productId.toString());
+      const data = response.data;
       console.log('Product ID check response:', data);
 
       setExistingIds([]);
@@ -137,7 +135,10 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
       if (data.exists && data.existingProduct && data.existingProduct.status === "in_stock") {
         setExistingIds([productId.toString()]);
         setExistingProducts({
-          [productId.toString()]: data.existingProduct
+          [productId.toString()]: {
+            ...data.existingProduct,
+            message: data.message
+          }
         });
       }
     } catch (error) {
@@ -161,35 +162,63 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
       setExistingProducts({});
 
       const idsToCheck = Array.from({ length: endId - startId + 1 }, (_, i) => startId + i);
-      const existing = await Promise.all(
-        idsToCheck.map(async id => {
-          const response = await fetch(`/api/inventory/${category}/check-product-id/${id}`);
-          if (!response.ok) {
-            throw new Error(`製品ID ${id} のチェックに失敗しました`);
+      console.log('製品IDチェック開始:', { startId, endId });
+      
+      try {
+        const responses = await Promise.all(
+          idsToCheck.map(async id => {
+            try {
+              const response = await inventoryApi.checkProductId(category, id.toString());
+              const data = response.data;
+              console.log(`製品ID ${id} のチェック結果:`, data);
+              return {
+                id,
+                data
+              };
+            } catch (error) {
+              console.error(`製品ID ${id} のチェックエラー:`, error);
+              throw error;
+            }
+          })
+        );
+
+        const newExistingIds: string[] = [];
+        const newExistingProducts: Record<string, { category: string; typeName: string; message: string }> = {};
+
+        for (const { id, data } of responses) {
+          console.log(`製品ID ${id} の処理:`, data);
+          if (data.exists && data.existingProduct) {
+            console.log(`製品ID ${id} は在庫に存在します`);
+            newExistingIds.push(id.toString());
+            newExistingProducts[id.toString()] = {
+              category: data.existingProduct.category,
+              typeName: data.existingProduct.typeName,
+              message: data.message || `製品ID ${id} は既に在庫に存在します`
+            };
           }
-          const data = await response.json();
-          return {
-            id,
-            exists: data.exists && data.existingProduct?.status === "in_stock",
-            existingProduct: data.existingProduct
-          };
-        })
-      );
-
-      const existingIds: string[] = [];
-      const existingProductsMap: Record<string, { category: string; typeName: string }> = {};
-
-      existing.forEach(item => {
-        if (item.exists && item.existingProduct) {
-          existingIds.push(item.id.toString());
-          existingProductsMap[item.id.toString()] = item.existingProduct;
         }
-      });
 
-      if (existingIds.length > 0) {
-        setExistingIds(existingIds);
-        setExistingProducts(existingProductsMap);
+        if (newExistingIds.length > 0) {
+          console.log('既存の製品IDが見つかりました:', newExistingIds);
+          setExistingIds(newExistingIds);
+          setExistingProducts(newExistingProducts);
+        } else {
+          console.log('既存の製品IDは見つかりませんでした');
+          setExistingIds([]);
+          setExistingProducts({});
+        }
+      } catch (error) {
+        console.error('製品IDチェックエラー:', error);
+        toast({
+          variant: "destructive",
+          title: "エラー",
+          description: error instanceof Error ? error.message : "製品IDのチェックに失敗しました",
+        });
+        setExistingIds([]);
+        setExistingProducts({});
       }
+
+      console.log('チェック結果:', { existingIds, existingProducts });
     } catch (error) {
       console.error('Product ID range check error:', error);
       setExistingIds([]);
@@ -206,17 +235,8 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
 
   const addModelNumberMutation = useMutation({
     mutationFn: async (modelNumber: string) => {
-      const res = await fetch("/api/pc-model-numbers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelNumber }),
-      });
-
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-
-      return res.json();
+      const response = await pcModelNumbersApi.create({ modelNumber });
+      return response.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pc-model-numbers"] });
@@ -238,15 +258,8 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
 
   const deleteModelNumberMutation = useMutation({
     mutationFn: async (modelNumber: string) => {
-      const res = await fetch(`/api/pc-model-numbers/${modelNumber}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-
-      return res.json();
+      const response = await pcModelNumbersApi.delete(modelNumber);
+      return response.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pc-model-numbers"] });
@@ -315,30 +328,39 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
     );
   }, [pcModelNumbers, modelNumberFilter]);
 
-  useEffect(() => {
-    const subscription = form.watch((value, { name }) => {
-      if (name === "productIdStart") {
-        const startId = form.getValues("productIdStart");
-        const endId = form.getValues("productIdEnd");
+  const handleCheckProductIds = useCallback(() => {
+    const startId = form.getValues("productIdStart");
+    const endId = form.getValues("productIdEnd");
 
-        if (startId) {
-          if (endId) {
-            checkProductIdRange(startId, endId);
-          } else {
-            checkProductId(startId);
-          }
-        }
-      } else if (name === "productIdEnd") {
-        const startId = form.getValues("productIdStart");
-        const endId = form.getValues("productIdEnd");
+    if (!startId) {
+      toast({
+        variant: "destructive",
+        title: "エラー",
+        description: "製品ID（開始）を入力してください。",
+      });
+      return;
+    }
 
-        if (startId && endId) {
-          checkProductIdRange(startId, endId);
-        }
-      }
-    });
-    return () => subscription.unsubscribe();
-  }, [form, checkProductId, checkProductIdRange]);
+    if (!endId) {
+      toast({
+        variant: "destructive",
+        title: "エラー",
+        description: "製品ID（終了）を入力してください。",
+      });
+      return;
+    }
+
+    if (startId > endId) {
+      toast({
+        variant: "destructive",
+        title: "エラー",
+        description: "製品ID（開始）は製品ID（終了）以下である必要があります。",
+      });
+      return;
+    }
+
+    checkProductIdRange(startId, endId);
+  }, [form, checkProductIdRange, toast]);
 
   useEffect(() => {
     form.reset({
@@ -370,6 +392,19 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
           variant: "destructive",
           title: "エラー",
           description: "担当者と製品タイプを選択してください。",
+        });
+        return;
+      }
+
+      // 入庫処理前に製品IDの重複チェックを実行
+      await checkProductIdRange(formData.productIdStart, formData.productIdEnd);
+      
+      // 重複がある場合は処理を中止
+      if (existingIds.length > 0) {
+        toast({
+          variant: "destructive",
+          title: "エラー",
+          description: "既に在庫に存在する製品IDが含まれているため、入庫できません。",
         });
         return;
       }
@@ -541,98 +576,118 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
           )}
         />
 
-        <div className="grid grid-cols-2 gap-4">
-          <FormField
-            control={form.control}
-            name="productIdStart"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>製品ID（開始）</FormLabel>
-                <FormControl>
-                  <div className="relative">
-                    <Input
-                      type="number"
-                      {...field}
-                      onChange={(e) => {
-                        const value = e.target.value ? parseInt(e.target.value, 10) : undefined;
-                        field.onChange(value);
-                      }}
-                    />
-                    {isChecking && (
-                      <div className="absolute right-2 top-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      </div>
-                    )}
-                  </div>
-                </FormControl>
-                {existingIds.includes(field.value?.toString() || "") && existingProducts[field.value?.toString()] && (
-                  <p className="text-sm text-red-500">
-                    {`${existingProducts[field.value?.toString()].category} (${existingProducts[field.value?.toString()].typeName}) の在庫にその製品IDが存在します`}
-                  </p>
-                )}
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="productIdEnd"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>製品ID（終了）</FormLabel>
-                <div className="flex items-start gap-2">
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <FormField
+              control={form.control}
+              name="productIdStart"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>製品ID（開始）</FormLabel>
                   <FormControl>
-                    <Input
-                      type="number"
-                      {...field}
-                      onChange={(e) => {
-                        const value = e.target.value ? parseInt(e.target.value, 10) : undefined;
-                        field.onChange(value);
-                      }}
-                    />
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        {...field}
+                        onChange={(e) => {
+                          const value = e.target.value ? parseInt(e.target.value, 10) : undefined;
+                          field.onChange(value);
+                        }}
+                      />
+                    </div>
                   </FormControl>
-                  <div className="flex flex-col gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={incrementEndId}
-                    >
-                      +
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={decrementEndId}
-                      disabled={form.watch("productIdEnd") === form.watch("productIdStart")}
-                    >
-                      -
-                    </Button>
+                  {existingIds.includes(field.value?.toString() || "") && existingProducts[field.value?.toString()] && (
+                    <p className="text-sm text-red-500">
+                      {existingProducts[field.value?.toString()].message}
+                    </p>
+                  )}
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="productIdEnd"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>製品ID（終了）</FormLabel>
+                  <div className="flex items-start gap-2">
+                    <FormControl>
+                      <Input
+                        type="number"
+                        {...field}
+                        onChange={(e) => {
+                          const value = e.target.value ? parseInt(e.target.value, 10) : undefined;
+                          field.onChange(value);
+                        }}
+                      />
+                    </FormControl>
+                    <div className="flex flex-col gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8"
+                        onClick={incrementEndId}
+                      >
+                        +
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8"
+                        onClick={decrementEndId}
+                        disabled={form.watch("productIdEnd") === form.watch("productIdStart")}
+                      >
+                        -
+                      </Button>
+                    </div>
                   </div>
-                </div>
-                {existingIds.includes(field.value?.toString() || "") && existingProducts[field.value?.toString()] && (
-                  <p className="text-sm text-red-500">
-                    {`${existingProducts[field.value?.toString()].category} (${existingProducts[field.value?.toString()].typeName}) の在庫にその製品IDが存在します`}
-                  </p>
-                )}
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+                  {existingIds.includes(field.value?.toString() || "") && existingProducts[field.value?.toString()] && (
+                    <p className="text-sm text-red-500">
+                      {existingProducts[field.value?.toString()].message}
+                    </p>
+                  )}
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCheckProductIds}
+              disabled={isChecking}
+              className="w-[200px]"
+            >
+              {isChecking ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  チェック中...
+                </>
+              ) : (
+                "製品IDをチェック"
+              )}
+            </Button>
+          </div>
         </div>
 
         {existingIds.length > 0 && (
           <div className="bg-red-50 p-4 rounded-md">
             <p className="text-sm text-red-800">
               以下の製品IDは既に在庫に存在するため、入庫できません：
-              {existingIds.map(id => (
-                `${id} (${existingProducts[id].category} - ${existingProducts[id].typeName})`
-              )).join(", ")}
             </p>
+            <ul className="mt-2 list-disc list-inside">
+              {existingIds.map(id => (
+                <li key={id} className="text-sm text-red-800">
+                  {`製品ID: ${id} - ${existingProducts[id].message}`}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -692,7 +747,7 @@ export function InboundForm({ category, onSubmit }: InboundFormProps) {
                               <Button
                                 type="button"
                                 variant="ghost"
-                                size="icon"
+                                size="sm"
                                 className="h-6 w-6 ml-2"
                                 onClick={(e) => {
                                   e.preventDefault();

@@ -7,9 +7,11 @@ import (
 )
 
 func SetupRouter() *gin.Engine {
-    r := gin.Default()
-
-    // CORSの設定を更新
+    r := gin.New()
+    
+    // ミドルウェアの順序を変更
+    r.Use(gin.Logger())
+    r.Use(gin.Recovery())
     r.Use(cors.New(cors.Config{
         AllowOrigins:     []string{"http://localhost:5173"},
         AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},

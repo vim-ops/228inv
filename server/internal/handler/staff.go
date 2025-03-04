@@ -4,6 +4,7 @@ import (
     "log"
     "net/http"
     "strconv"
+    "time"
     "github.com/gin-gonic/gin"
     "inventory-tracker/server/internal/db"
 )
@@ -41,13 +42,13 @@ func CreateStaff(c *gin.Context) {
 
     log.Printf("[CreateStaff] 担当者名: %s", req.Name)
     var staff struct {
-        ID        int    `json:"id"`
-        Name      string `json:"name"`
-        CreatedAt string `json:"createdAt"`
+        ID        int       `json:"id"`
+        Name      string    `json:"name"`
+        CreatedAt time.Time `json:"createdAt"`
     }
 
     err := db.DB.QueryRow(
-        "INSERT INTO staff (name) VALUES ($1) RETURNING id, name, created_at",
+        "INSERT INTO staff (name) VALUES ($1) RETURNING id, name, created_at::timestamp",
         req.Name,
     ).Scan(&staff.ID, &staff.Name, &staff.CreatedAt)
 

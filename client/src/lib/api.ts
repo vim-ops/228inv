@@ -133,11 +133,11 @@ export const productTypesApi = {
 
 // PC型番API
 export const pcModelNumbersApi = {
-    getAll: () => api.get<string[]>('/pc-model-numbers'),
+    getAll: () => api.get<{ id: number; modelNumber: string }[]>('/pc-model-numbers'),
     create: (data: { modelNumber: string }) =>
-        api.post('/pc-model-numbers', data),
+        api.post<{ id: number; modelNumber: string }>('/pc-model-numbers', data),
     delete: (modelNumber: string) =>
-        api.delete(`/pc-model-numbers/${modelNumber}`),
+        api.delete<{ message: string }>(`/pc-model-numbers/${modelNumber}`),
 };
 
 // ダッシュボードAPI

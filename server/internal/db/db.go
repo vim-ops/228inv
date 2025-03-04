@@ -95,26 +95,26 @@ func GetPCModelNumbers() ([]string, error) {
 
 // スタッフ一覧の取得
 func GetStaffList() ([]struct {
-    ID        int    `json:"id"`
-    Name      string `json:"name"`
-    CreatedAt string `json:"createdAt"`
+    ID        int       `json:"id"`
+    Name      string    `json:"name"`
+    CreatedAt time.Time `json:"createdAt"`
 }, error) {
-    rows, err := DB.Query("SELECT id, name, created_at FROM staff ORDER BY id")
+    rows, err := DB.Query("SELECT id, name, created_at::timestamp FROM staff ORDER BY id")
     if err != nil {
         return nil, err
     }
     defer rows.Close()
 
     var staffList []struct {
-        ID        int    `json:"id"`
-        Name      string `json:"name"`
-        CreatedAt string `json:"createdAt"`
+        ID        int       `json:"id"`
+        Name      string    `json:"name"`
+        CreatedAt time.Time `json:"createdAt"`
     }
     for rows.Next() {
         var staff struct {
-            ID        int    `json:"id"`
-            Name      string `json:"name"`
-            CreatedAt string `json:"createdAt"`
+            ID        int       `json:"id"`
+            Name      string    `json:"name"`
+            CreatedAt time.Time `json:"createdAt"`
         }
         if err := rows.Scan(&staff.ID, &staff.Name, &staff.CreatedAt); err != nil {
             return nil, err

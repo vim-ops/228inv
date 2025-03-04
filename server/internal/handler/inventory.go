@@ -15,45 +15,90 @@ import (
 func CheckProductID(c *gin.Context) {
     category := c.Param("category")
     productID := c.Param("productId")
-// 製品の存在、在庫状態、型番を確認
-var exists bool
-var typeName string
-var status string
-err := db.DB.QueryRow(`
-    SELECT
-        CASE WHEN p.id IS NOT NULL THEN true ELSE false END as exists,
-        COALESCE(pt.name, '') as type_name,
-        COALESCE(p.status, '') as status
-    FROM (SELECT 1) as dummy
-    LEFT JOIN products p ON p.product_id = $1
-    LEFT JOIN product_types pt ON p.type_id = pt.id AND pt.category = $2
-`, productID, category).Scan(&exists, &typeName, &status)
 
-if err != nil {
-    c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-    return
-}
+    log.Printf("製品ID存在チェック開始: category=%s, productID=%s", category, productID)
 
-var message string
-if !exists {
-    message = "その製品IDは存在しません"
-} else if status != "in_stock" {
-    message = "その製品IDは既に出庫済みです"
-} else if typeName == "" {
-    message = "その製品IDは異なる製品カテゴリに属しています"
-} else {
-    message = fmt.Sprintf("その製品ID（%s）は在庫に存在します", typeName)
-}
+    // パラメータのバリデーション
+    if category == "" || productID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{
+            "exists": false,
+            "message": "カテゴリまたは製品IDが指定されていません",
+            "existingProduct": nil,
+        })
+        return
+    }
 
-c.JSON(http.StatusOK, gin.H{
-    "exists": exists && status == "in_stock" && typeName != "",
-    "message": message,
-    "existingProduct": gin.H{
-        "category": category,
-        "typeName": typeName,
-        "status": status,
-    },
-})
+    // クエリの実行
+    query := `
+        SELECT
+            pt.name,
+            p.status,
+            CASE
+                WHEN pt.category = 'pc' THEN 'PC'
+                WHEN pt.category = 'vest' THEN 'ベスト'
+                WHEN pt.category = 'heart_rate_monitor' THEN '心拍計'
+                ELSE pt.category
+            END as location
+        FROM products p
+        INNER JOIN product_types pt ON p.type_id = pt.id
+        WHERE p.product_id = $1 AND pt.category = $2
+    `
+
+    var result struct {
+        TypeName string
+        Status   string
+        Location string
+    }
+
+    err := db.DB.QueryRow(query, productID, category).Scan(
+        &result.TypeName,
+        &result.Status,
+        &result.Location,
+    )
+
+    // エラーハンドリング
+    if err != nil {
+        if err == sql.ErrNoRows {
+            log.Printf("製品が見つかりません: productID=%s", productID)
+            c.JSON(http.StatusOK, gin.H{
+                "exists": false,
+                "message": "",
+                "existingProduct": nil,
+            })
+            return
+        }
+        
+        log.Printf("データベースエラー: %v", err)
+        c.JSON(http.StatusOK, gin.H{
+            "exists": false,
+            "message": "データベースエラーが発生しました",
+            "existingProduct": nil,
+        })
+        return
+    }
+
+    // レスポンスの構築
+    isInStock := result.Status == "in_stock"
+    var message string
+    var existingProduct interface{} = nil
+
+    if isInStock {
+        message = fmt.Sprintf("その製品IDは%sの在庫に存在します", result.Location)
+        existingProduct = gin.H{
+            "category":  category,
+            "typeName": result.TypeName,
+            "status":   result.Status,
+        }
+    }
+
+    response := gin.H{
+        "exists":          isInStock,
+        "message":         message,
+        "existingProduct": existingProduct,
+    }
+
+    log.Printf("レスポンス: %+v", response)
+    c.JSON(http.StatusOK, response)
 }
 
 // 入庫処理ハンドラー
